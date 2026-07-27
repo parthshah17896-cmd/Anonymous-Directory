@@ -55,6 +55,10 @@ async def cmd_start(message: types.Message):
 
 async def show_directory(chat_id: int, db: Session):
     profiles = db.query(Profile).all()
+    
+    # Dynamically get the absolute path to the directory where bot.py lives
+    base_dir = os.path.dirname(os.path.abspath(__file__))
+    
     for prof in profiles:
         caption = (
             f"👤 **Name:** {prof.name}\n"
@@ -67,10 +71,15 @@ async def show_directory(chat_id: int, db: Session):
             [InlineKeyboardButton(text=f"✨ Select {prof.name}", callback_data=f"select_{prof.id}")]
         ])
         
-        if os.path.exists(prof.image_path):
-            photo = FSInputFile(prof.image_path)
+        # Join the base directory with the image path stored in the database
+        absolute_image_path = os.path.join(base_dir, prof.image_path)
+        
+        if os.path.exists(absolute_image_path):
+            photo = FSInputFile(absolute_image_path)
             await bot.send_photo(chat_id, photo=photo, caption=caption, parse_mode="Markdown", reply_markup=kb)
         else:
+            # Print a warning to your Railway logs if the path is wrong
+            logging.warning(f"IMAGE NOT FOUND AT: {absolute_image_path}")
             await bot.send_message(chat_id, text=caption, parse_mode="Markdown", reply_markup=kb)
 
 @dp.callback_query(F.data.startswith("select_"))
