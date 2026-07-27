@@ -13,7 +13,7 @@ class ResetStatus(str, enum.Enum):
     REJECTED = "REJECTED"
 
 class Profile(Base):
-    __tablename__ = "profiles"
+    __tablename__ = "directory_profiles"  # Updated table name to apply new schema
 
     id = Column(Integer, primary_key=True, autoincrement=True)
     name = Column(String, nullable=False)
@@ -21,7 +21,8 @@ class Profile(Base):
     marital_status = Column(String, nullable=False)
     country = Column(String, nullable=False)
     hobbies = Column(Text, nullable=False)
-    image_path = Column(String, nullable=False)  # Local file path or Telegram File ID
+    image_path = Column(String, nullable=False)
+    bot_username = Column(String, nullable=False)  # Stores the Telegram handle without '@'
 
     users = relationship("User", back_populates="selected_profile")
 
