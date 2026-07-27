@@ -37,13 +37,18 @@ async def cmd_start(message: types.Message):
 
     if user.selected_profile_id:
         profile = db.query(Profile).filter(Profile.id == user.selected_profile_id).first()
+        
+        # Link to open the target bot chat directly
+        chat_url = f"https://t.me/{profile.bot_username}"
+        
         kb = InlineKeyboardMarkup(inline_keyboard=[
+            [InlineKeyboardButton(text=f"💬 Continue to Chat with {profile.name}", url=chat_url)],
             [InlineKeyboardButton(text="🔄 Request Reset Selection", callback_data="request_reset")]
         ])
+        
         await message.answer(
-            f"🔒 **You have already selected {profile.name}.**\n\n"
-            f"You cannot select another profile on your own.\n"
-            f"You can now send messages here to chat or request a selection reset.",
+            f"🔒 **You have selected {profile.name}.**\n\n"
+            f"Click the button below to open your chat with her.",
             parse_mode="Markdown",
             reply_markup=kb
         )
@@ -93,7 +98,7 @@ async def handle_selection(callback: types.CallbackQuery):
         db.close()
         return
 
-    # Lock selection
+    # Save selection
     user.selected_profile_id = profile_id
     db.commit()
 
@@ -102,13 +107,16 @@ async def handle_selection(callback: types.CallbackQuery):
 
     await callback.message.edit_reply_markup(reply_markup=None)
     
+    chat_url = f"https://t.me/{profile.bot_username}"
+    
     kb = InlineKeyboardMarkup(inline_keyboard=[
+        [InlineKeyboardButton(text=f"💬 Continue to Chat with {profile.name}", url=chat_url)],
         [InlineKeyboardButton(text="🔄 Request Reset Selection", callback_data="request_reset")]
     ])
     
     await callback.message.answer(
         f"✅ **Successfully selected {profile.name}!**\n\n"
-        f"Your choice is locked and saved. Even if the system restarts, your selection remains active.",
+        f"Your choice is locked. Click below to start chatting with {profile.name}:",
         parse_mode="Markdown",
         reply_markup=kb
     )
