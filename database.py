@@ -30,12 +30,14 @@ from sqlalchemy import create_engine, Column, Integer, BigInteger, String, Forei
 # ... (keep the rest of your imports and Profile class as they were)
 
 class User(Base):
-    # Renamed the table to force Postgres to create a new one with the correct BigInteger type
-    __tablename__ = "telegram_users" 
+    __tablename__ = "telegram_users"
 
     telegram_id = Column(BigInteger, primary_key=True, autoincrement=False)
     username = Column(String, nullable=True)
-    selected_profile_id = Column(Integer, ForeignKey("profiles.id"), nullable=True)
+    
+    # FIXED: The ForeignKey now correctly points to 'directory_profiles.id'
+    selected_profile_id = Column(Integer, ForeignKey("directory_profiles.id"), nullable=True)
+    
     reset_status = Column(String, default=ResetStatus.NONE.value)
 
     selected_profile = relationship("Profile", back_populates="users")
