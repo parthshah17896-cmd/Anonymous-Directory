@@ -1,72 +1,91 @@
 """
 ===============================================================================
-DATABASE.PY
+database.py
 Telegram Directory Bot v2.0
 ===============================================================================
 
-Handles:
-    • PostgreSQL Connection Pool
-    • Database Initialization
-    • Profile Cache
-    • User CRUD
-    • Reset Requests
-    • Error Handling
+PostgreSQL Database Layer
 
-Author: ChatGPT
+Features
+--------
+✓ Connection Pool
+✓ Automatic Transactions
+✓ Context Manager
+✓ Schema Initialization
+✓ Profile Cache
+✓ Railway Compatible
 ===============================================================================
 """
 
-import os
-import logging
+from __future__ import annotations
+
 from contextlib import contextmanager
-from typing import List, Dict, Optional, Tuple
+from typing import Dict, List, Optional
 
 import psycopg2
 from psycopg2 import pool
 from psycopg2.extras import RealDictCursor
 
-
-# =============================================================================
-# CONFIGURATION
-# =============================================================================
-
-DATABASE_URL = os.getenv("DATABASE_URL")
-
-if not DATABASE_URL:
-    raise ValueError("DATABASE_URL environment variable not found.")
-
-
-# =============================================================================
-# LOGGER
-# =============================================================================
-
-logger = logging.getLogger(__name__)
+from config import config
+from logger import logger
 
 
 # =============================================================================
 # CONNECTION POOL
 # =============================================================================
 
-connection_pool = pool.SimpleConnectionPool(
-    minconn=1,
-    maxconn=10,
-    dsn=DATABASE_URL
-)
+_connection_pool: Optional[pool.SimpleConnectionPool] = None
+
+
+def initialize_pool() -> None:
+    """
+    Creates the PostgreSQL connection pool.
+    """
+
+    global _connection_pool
+
+    if _connection_pool is not None:
+        return
+
+    logger.info("Creating PostgreSQL connection pool...")
+
+    _connection_pool = pool.SimpleConnectionPool(
+        minconn=config.DB_POOL_MIN,
+        maxconn=config.DB_POOL_MAX,
+        dsn=config.DATABASE_URL,
+    )
+
+    logger.info("Connection pool created.")
+
+
+def close_pool() -> None:
+    """
+    Close every database connection.
+    """
+
+    global _connection_pool
+
+    if _connection_pool:
+
+        logger.info("Closing PostgreSQL connection pool...")
+
+        _connection_pool.closeall()
+
+        _connection_pool = None
 
 
 def get_connection():
-    """
-    Get a database connection from the pool.
-    """
-    return connection_pool.getconn()
+
+    if _connection_pool is None:
+        initialize_pool()
+
+    return _connection_pool.getconn()
 
 
-def release_connection(conn):
-    """
-    Return connection back to the pool.
-    """
-    if conn:
-        connection_pool.putconn(conn)
+def release_connection(connection):
+
+    if _connection_pool:
+        _connection_pool.putconn(connection)
 
 
 # =============================================================================
@@ -76,39 +95,44 @@ def release_connection(conn):
 @contextmanager
 def get_cursor(dictionary: bool = False):
     """
-    Context manager for PostgreSQL cursor.
+    Database cursor context manager.
 
     Automatically:
 
-    - Gets pooled connection
-    - Creates cursor
-    - Commits transaction
-    - Rolls back on exception
-    - Closes cursor
-    - Releases connection
+    • gets pooled connection
+    • commits
+    • rollback on failure
+    • closes cursor
+    • returns connection
     """
 
-    conn = get_connection()
+    connection = get_connection()
 
-    if dictionary:
-        cursor = conn.cursor(cursor_factory=RealDictCursor)
-    else:
-        cursor = conn.cursor()
+    cursor = (
+        connection.cursor(cursor_factory=RealDictCursor)
+        if dictionary
+        else connection.cursor()
+    )
 
     try:
+
         yield cursor
-        conn.commit()
+
+        connection.commit()
 
     except Exception:
 
-        conn.rollback()
+        connection.rollback()
+
         logger.exception("Database transaction failed.")
+
         raise
 
     finally:
 
         cursor.close()
-        release_connection(conn)
+
+        release_connection(connection)
 
 
 # =============================================================================
@@ -118,22 +142,30 @@ def get_cursor(dictionary: bool = False):
 PROFILE_CACHE: List[Dict] = []
 
 
+def clear_cache():
+
+    global PROFILE_CACHE
+
+    PROFILE_CACHE.clear()
+
+
 # =============================================================================
 # DATABASE INITIALIZATION
 # =============================================================================
 
-def init_db():
+def init_db() -> None:
     """
-    Creates all required tables if they do not exist.
+    Creates all database tables.
+    Safe to execute multiple times.
     """
 
     logger.info("Initializing database...")
 
     with get_cursor() as cur:
 
-        # ==========================================================
+        # ---------------------------------------------------------------------
         # USERS
-        # ==========================================================
+        # ---------------------------------------------------------------------
 
         cur.execute("""
         CREATE TABLE IF NOT EXISTS users(
@@ -151,14 +183,11 @@ def init_db():
         );
         """)
 
-        logger.info("Users table verified.")
-
-        # ==========================================================
+        # ---------------------------------------------------------------------
         # RESET REQUESTS
-        # ==========================================================
+        # ---------------------------------------------------------------------
 
         cur.execute("""
-
         CREATE TABLE IF NOT EXISTS reset_requests(
 
             telegram_id BIGINT PRIMARY KEY,
@@ -168,17 +197,13 @@ def init_db():
             requested_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
 
         );
-
         """)
 
-        logger.info("Reset request table verified.")
-
-        # ==========================================================
+        # ---------------------------------------------------------------------
         # PROFILES
-        # ==========================================================
+        # ---------------------------------------------------------------------
 
         cur.execute("""
-
         CREATE TABLE IF NOT EXISTS profiles(
 
             id INTEGER PRIMARY KEY,
@@ -202,10 +227,21 @@ def init_db():
             created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
 
         );
-
         """)
 
-        logger.info("Profiles table verified.")
+        # ---------------------------------------------------------------------
+        # INDEXES
+        # ---------------------------------------------------------------------
+
+        cur.execute("""
+        CREATE INDEX IF NOT EXISTS idx_users_profile
+        ON users(selected_profile_id);
+        """)
+
+        cur.execute("""
+        CREATE INDEX IF NOT EXISTS idx_reset_status
+        ON reset_requests(status);
+        """)
 
     logger.info("Database initialized successfully.")
 
@@ -215,9 +251,7 @@ def init_db():
 
 def load_profiles() -> None:
     """
-    Loads all active profiles into memory.
-
-    This function should be called once when the bot starts.
+    Load all active profiles from the database into memory.
     """
 
     global PROFILE_CACHE
@@ -241,82 +275,167 @@ def load_profiles() -> None:
             ORDER BY id;
         """)
 
-        PROFILE_CACHE = list(cur.fetchall())
+        PROFILE_CACHE = [dict(row) for row in cur.fetchall()]
 
-    logger.info("Loaded %d active profiles.", len(PROFILE_CACHE))
+    logger.info("Loaded %d profiles.", len(PROFILE_CACHE))
 
 
 def refresh_profiles() -> None:
     """
-    Refresh profile cache from PostgreSQL.
+    Refresh the in-memory profile cache.
     """
 
-    logger.info("Refreshing profile cache...")
-
+    clear_cache()
     load_profiles()
-
-    logger.info("Profile cache refreshed.")
 
 
 def get_profiles() -> List[Dict]:
     """
-    Returns cached profiles.
-
-    No database query is executed.
+    Return all cached profiles.
     """
 
-    return PROFILE_CACHE
+    return PROFILE_CACHE.copy()
+
+
+def get_profile_by_id(profile_id: int) -> Optional[Dict]:
+    """
+    Get a profile from cache by ID.
+    """
+
+    for profile in PROFILE_CACHE:
+        if profile["id"] == profile_id:
+            return profile
+
+    return None
 
 
 # =============================================================================
-# USER FUNCTIONS
+# PROFILE CRUD
 # =============================================================================
 
-def save_selection(
-    telegram_id: int,
+def add_profile(
     profile_id: int,
-    selected_name: str,
-    selected_bot: str
+    name: str,
+    age: int,
+    marital_status: str,
+    country: str,
+    about: str,
+    image: str,
+    bot_link: str,
 ) -> None:
     """
-    Save the selected profile for a user.
+    Add a new profile.
     """
-
-    logger.info(
-        "Saving selection for Telegram ID %s (%s)",
-        telegram_id,
-        selected_name
-    )
 
     with get_cursor() as cur:
 
         cur.execute(
             """
-            INSERT INTO users(
+            INSERT INTO profiles(
 
-                telegram_id,
-                selected_profile_id,
-                selected_name,
-                selected_bot
+                id,
+                name,
+                age,
+                marital_status,
+                country,
+                about,
+                image,
+                bot_link
 
             )
 
-            VALUES (%s,%s,%s,%s)
+            VALUES (%s,%s,%s,%s,%s,%s,%s,%s)
             """,
             (
-                telegram_id,
                 profile_id,
-                selected_name,
-                selected_bot
-            )
+                name,
+                age,
+                marital_status,
+                country,
+                about,
+                image,
+                bot_link,
+            ),
         )
 
+    refresh_profiles()
 
-def user_exists(
-    telegram_id: int
-) -> bool:
+    logger.info("Profile '%s' added.", name)
+
+
+def update_profile(
+    profile_id: int,
+    name: str,
+    age: int,
+    marital_status: str,
+    country: str,
+    about: str,
+    image: str,
+    bot_link: str,
+    is_active: bool = True,
+) -> None:
     """
-    Returns True if the user has already selected a profile.
+    Update an existing profile.
+    """
+
+    with get_cursor() as cur:
+
+        cur.execute(
+            """
+            UPDATE profiles
+            SET
+                name=%s,
+                age=%s,
+                marital_status=%s,
+                country=%s,
+                about=%s,
+                image=%s,
+                bot_link=%s,
+                is_active=%s
+            WHERE id=%s
+            """,
+            (
+                name,
+                age,
+                marital_status,
+                country,
+                about,
+                image,
+                bot_link,
+                is_active,
+                profile_id,
+            ),
+        )
+
+    refresh_profiles()
+
+    logger.info("Profile ID %s updated.", profile_id)
+
+
+def delete_profile(profile_id: int) -> None:
+    """
+    Soft delete a profile by marking it inactive.
+    """
+
+    with get_cursor() as cur:
+
+        cur.execute(
+            """
+            UPDATE profiles
+            SET is_active = FALSE
+            WHERE id = %s
+            """,
+            (profile_id,),
+        )
+
+    refresh_profiles()
+
+    logger.info("Profile ID %s deactivated.", profile_id)
+
+
+def profile_exists(profile_id: int) -> bool:
+    """
+    Check whether a profile exists.
     """
 
     with get_cursor() as cur:
@@ -324,282 +443,11 @@ def user_exists(
         cur.execute(
             """
             SELECT 1
-            FROM users
-            WHERE telegram_id=%s
+            FROM profiles
+            WHERE id = %s
             """,
-            (telegram_id,)
+            (profile_id,),
         )
 
         return cur.fetchone() is not None
-
-
-def get_selection(
-    telegram_id: int
-) -> Optional[Tuple[str, str]]:
-    """
-    Returns:
-
-        (
-            selected_name,
-            selected_bot
-        )
-
-    or None.
-    """
-
-    with get_cursor() as cur:
-
-        cur.execute(
-            """
-            SELECT
-
-                selected_name,
-                selected_bot
-
-            FROM users
-
-            WHERE telegram_id=%s
-            """,
-            (telegram_id,)
-        )
-
-        row = cur.fetchone()
-
-        if row is None:
-            return None
-
-        return row
-
-
-def reset_selection(
-    telegram_id: int
-) -> None:
-    """
-    Deletes the selected profile.
-
-    Called after admin approval.
-    """
-
-    logger.info(
-        "Resetting profile selection for %s",
-        telegram_id
-    )
-
-    with get_cursor() as cur:
-
-        cur.execute(
-            """
-            DELETE
-            FROM users
-            WHERE telegram_id=%s
-            """,
-            (telegram_id,)
-        )
-
-# =============================================================================
-# RESET REQUEST FUNCTIONS
-# =============================================================================
-
-def has_pending_request(
-    telegram_id: int
-) -> bool:
-    """
-    Returns True if user already has
-    a pending reset request.
-    """
-
-    with get_cursor() as cur:
-
-        cur.execute(
-            """
-            SELECT status
-            FROM reset_requests
-            WHERE telegram_id=%s
-            """,
-            (telegram_id,)
-        )
-
-        row = cur.fetchone()
-
-        return (
-            row is not None
-            and row[0] == "PENDING"
-        )
-
-
-def create_reset_request(
-    telegram_id: int
-) -> None:
-    """
-    Creates or updates
-    a reset request.
-    """
-
-    logger.info(
-        "Creating reset request for %s",
-        telegram_id
-    )
-
-    with get_cursor() as cur:
-
-        cur.execute(
-            """
-            INSERT INTO reset_requests(
-
-                telegram_id,
-                status
-
-            )
-
-            VALUES(
-
-                %s,
-                'PENDING'
-
-            )
-
-            ON CONFLICT(telegram_id)
-
-            DO UPDATE SET
-
-                status='PENDING',
-                requested_at=CURRENT_TIMESTAMP
-            """,
-            (telegram_id,)
-        )
-
-
-def approve_request(
-    telegram_id: int
-) -> None:
-    """
-    Marks request as approved.
-    """
-
-    logger.info(
-        "Approved reset request %s",
-        telegram_id
-    )
-
-    with get_cursor() as cur:
-
-        cur.execute(
-            """
-            UPDATE reset_requests
-
-            SET status='APPROVED'
-
-            WHERE telegram_id=%s
-            """,
-            (telegram_id,)
-        )
-
-
-def reject_request(
-    telegram_id: int
-) -> None:
-    """
-    Marks request as rejected.
-    """
-
-    logger.info(
-        "Rejected reset request %s",
-        telegram_id
-    )
-
-    with get_cursor() as cur:
-
-        cur.execute(
-            """
-            UPDATE reset_requests
-
-            SET status='REJECTED'
-
-            WHERE telegram_id=%s
-            """,
-            (telegram_id,)
-        )
-
-
-def delete_request(
-    telegram_id: int
-) -> None:
-    """
-    Deletes request after
-    approval/rejection.
-    """
-
-    logger.info(
-        "Deleting reset request %s",
-        telegram_id
-    )
-
-    with get_cursor() as cur:
-
-        cur.execute(
-            """
-            DELETE
-            FROM reset_requests
-            WHERE telegram_id=%s
-            """,
-            (telegram_id,)
-        )
-
-
-# =============================================================================
-# SHUTDOWN
-# =============================================================================
-
-def close_pool() -> None:
-    """
-    Close all PostgreSQL connections.
-
-    Call this only when the bot
-    is shutting down.
-    """
-
-    logger.info("Closing PostgreSQL connection pool.")
-
-    if connection_pool:
-        connection_pool.closeall()
-
-
-# =============================================================================
-# DATABASE STATS
-# =============================================================================
-
-def get_database_stats() -> dict:
-    """
-    Returns basic database statistics.
-    Useful for admin commands.
-    """
-
-    with get_cursor() as cur:
-
-        cur.execute("SELECT COUNT(*) FROM users")
-        users = cur.fetchone()[0]
-
-        cur.execute("""
-            SELECT COUNT(*)
-            FROM profiles
-            WHERE is_active=TRUE
-        """)
-        profiles = cur.fetchone()[0]
-
-        cur.execute("""
-            SELECT COUNT(*)
-            FROM reset_requests
-            WHERE status='PENDING'
-        """)
-        pending = cur.fetchone()[0]
-
-    return {
-        "users": users,
-        "profiles": profiles,
-        "pending_requests": pending
-    }
-
-
-# =============================================================================
-# END OF FILE
-# =============================================================================
+        
