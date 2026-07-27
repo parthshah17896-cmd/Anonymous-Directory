@@ -25,15 +25,19 @@ class Profile(Base):
 
     users = relationship("User", back_populates="selected_profile")
 
-class User(Base):
-    __tablename__ = "users"
+from sqlalchemy import create_engine, Column, Integer, BigInteger, String, ForeignKey, Text, Enum
+# ... (keep the rest of your imports and Profile class as they were)
 
-    telegram_id = Column(Integer, primary_key=True)  # Telegram User ID
+class User(Base):
+    # Renamed the table to force Postgres to create a new one with the correct BigInteger type
+    __tablename__ = "telegram_users" 
+
+    telegram_id = Column(BigInteger, primary_key=True, autoincrement=False)
     username = Column(String, nullable=True)
     selected_profile_id = Column(Integer, ForeignKey("profiles.id"), nullable=True)
     reset_status = Column(String, default=ResetStatus.NONE.value)
 
     selected_profile = relationship("Profile", back_populates="users")
-
+    
 def init_db():
     Base.metadata.create_all(bind=engine)
